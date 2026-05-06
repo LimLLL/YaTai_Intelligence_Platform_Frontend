@@ -63,6 +63,7 @@ jobs:
           VITE_KEYCLOAK_CLIENT_ID=${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           VITE_AG_GRID_LICENSE_KEY=${{ secrets.VITE_AG_GRID_LICENSE_KEY }}
+          VITE_UPDATE_CHECK_URL=${{ vars.GHPROXY_URL }}${{ github.repository }}/releases/latest/download/latest.json
           ENVEOF
 
       - uses: pnpm/action-setup@v4
@@ -149,6 +150,7 @@ jobs:
           VITE_KEYCLOAK_CLIENT_ID=${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
           VITE_AG_GRID_LICENSE_KEY=${{ secrets.VITE_AG_GRID_LICENSE_KEY }}
+          VITE_UPDATE_CHECK_URL=${{ vars.GHPROXY_URL }}${{ github.repository }}/releases/latest/download/latest.json
           ENVEOF
 
       - uses: pnpm/action-setup@v4
@@ -241,9 +243,9 @@ jobs:
 
           gh release upload "$TAG" "$APK" --clobber
 
-  # ─── Finalize: patch latest.json for China mirror ─────────────────────
+  # ─── Finalize: inject Android platform + patch mirror proxy ──────────
   finalize:
-    needs: build-desktop
+    needs: [build-desktop, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -251,7 +253,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Patch latest.json with mirror proxy
+      - name: Patch latest.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHPROXY_URL: ${{ vars.GHPROXY_URL }}
@@ -261,11 +263,20 @@ jobs:
 
           gh release download "$TAG" -p "latest.json" --clobber || { echo "No latest.json asset"; exit 0; }
 
+          # 从 latest.json 读取版本号，注入 android-aarch64 平台
+          VERSION=$(jq -r .version latest.json)
+          REPO="${GITHUB_REPOSITORY}"
+          APK_URL="https://github.com/${REPO}/releases/download/${TAG}/${{ env.APP_NAME }}_${VERSION}_aarch64.apk"
+          jq --arg url "$APK_URL" '.platforms["android-aarch64"] = {"url": $url, "signature": ""}' latest.json > latest_tmp.json
+          mv latest_tmp.json latest.json
+
+          # 将所有 GitHub URL 替换为代理加速地址
           if [ -n "$GHPROXY_URL" ]; then
-            # 将 https://github.com/ 替换为加速地址（如 https://speed.oo9.dpdns.org/gh/）
             sed -i "s|https://github.com/|${GHPROXY_URL}|g" latest.json
-            gh release delete-asset "$TAG" "latest.json" -y 2>/dev/null || true
-            gh release upload "$TAG" "latest.json"
+          fi
+
+          gh release delete-asset "$TAG" "latest.json" -y 2>/dev/null || true
+          gh release upload "$TAG" "latest.json"
             echo "✅ Patched latest.json with proxy: $GHPROXY_URL"
           else
             echo "⏭️ GHPROXY_URL not set, skipping proxy patch"
