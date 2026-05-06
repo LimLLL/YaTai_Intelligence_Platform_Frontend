@@ -1,0 +1,263 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['RELEASE_NOTE.md']
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  APP_NAME: YaTai_Intelligence_Platform
+  NDK_VERSION: '30.0.14904198'
+  PNPM_VERSION: 10
+  NODE_VERSION: lts/*
+
+jobs:
+  # ─── Desktop: macOS (arm64 + x86_64) + Windows ────────────────────────
+  build-desktop:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            rust_targets: aarch64-apple-darwin
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+            rust_targets: x86_64-apple-darwin
+          # - platform: ubuntu-22.04   # 取消注释以启用 Linux 构建
+          #   args: ''
+          #   rust_targets: ''
+          - platform: windows-latest
+            args: '-c src-tauri/tauri.windows.conf.json'
+            rust_targets: ''
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone source from Gitea
+        shell: bash
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_ACCESS_TOKEN }}
+          GITEA_URL: ${{ secrets.GITEA_REPO_URL }}
+        run: |
+          git clone "https://${GITEA_TOKEN}@${GITEA_URL#https://}" _source
+          rm -rf _source/.git
+          shopt -s dotglob
+          cp -rf _source/* .
+          rm -rf _source
+
+      - name: Create .env
+        shell: bash
+        run: |
+          cat > .env << 'ENVEOF'
+          VITE_KEYCLOAK_URL=${{ secrets.VITE_KEYCLOAK_URL }}
+          VITE_KEYCLOAK_REALM=${{ secrets.VITE_KEYCLOAK_REALM }}
+          VITE_KEYCLOAK_CLIENT_ID=${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
+          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
+          VITE_AG_GRID_LICENSE_KEY=${{ secrets.VITE_AG_GRID_LICENSE_KEY }}
+          ENVEOF
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          key: desktop-${{ matrix.platform }}-${{ matrix.args }}
+
+      # Ubuntu only — 取消注释 Linux 构建时需要
+      # - name: Install Linux dependencies
+      #   if: runner.os == 'Linux'
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - run: pnpm install
+
+      - name: Read release notes
+        id: notes
+        shell: bash
+        run: |
+          if [ -f RELEASE_NOTE.md ]; then
+            echo "body<<RELEASE_EOF" >> "$GITHUB_OUTPUT"
+            cat RELEASE_NOTE.md >> "$GITHUB_OUTPUT"
+            echo "RELEASE_EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "body=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: LimLLL/tauri-action-renameArtifacts@v0.5.18
+        env:
+          NODE_ENV: production
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: app-v__VERSION__
+          releaseName: 'v__VERSION__'
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          updaterJsonPreferNsis: true
+          retryAttempts: 3
+          renameArtifacts: ${{ env.APP_NAME }}
+
+  # ─── Android: aarch64 APK ─────────────────────────────────────────────
+  build-android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone source from Gitea
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_ACCESS_TOKEN }}
+          GITEA_URL: ${{ secrets.GITEA_REPO_URL }}
+        run: |
+          git clone "https://${GITEA_TOKEN}@${GITEA_URL#https://}" _source
+          rm -rf _source/.git
+          shopt -s dotglob
+          cp -rf _source/* .
+          rm -rf _source
+
+      - name: Create .env
+        run: |
+          cat > .env << 'ENVEOF'
+          VITE_KEYCLOAK_URL=${{ secrets.VITE_KEYCLOAK_URL }}
+          VITE_KEYCLOAK_REALM=${{ secrets.VITE_KEYCLOAK_REALM }}
+          VITE_KEYCLOAK_CLIENT_ID=${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
+          VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
+          VITE_AG_GRID_LICENSE_KEY=${{ secrets.VITE_AG_GRID_LICENSE_KEY }}
+          ENVEOF
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - run: sdkmanager "ndk;${{ env.NDK_VERSION }}"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          key: android
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/gradle-wrapper.properties', '**/*.gradle*') }}
+          restore-keys: gradle-
+
+      - run: pnpm install
+
+      - name: Build APK
+        run: pnpm tauri android build --target aarch64
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          NODE_ENV: production
+
+      - name: Sign APK
+        run: |
+          echo "${{ secrets.ANDROID_RELEASE_KEYSTORE }}" | base64 -d > release.jks
+          APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f | sort -V | tail -1)
+          "$APKSIGNER" sign \
+            --ks release.jks \
+            --ks-key-alias "${{ secrets.ANDROID_RELEASE_KEY }}" \
+            --ks-pass "pass:${{ secrets.ANDROID_RELEASE_PASSWORD }}" \
+            --key-pass "pass:${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}" \
+            --out signed.apk \
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+          rm -f release.jks
+
+      - name: Get version
+        id: version
+        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK="${{ env.APP_NAME }}_${{ steps.version.outputs.version }}_aarch64.apk"
+          mv signed.apk "$APK"
+
+          # Desktop build 可能还没创建 draft release，轮询等待（最长 15 分钟）
+          for i in $(seq 1 30); do
+            TAG=$(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | head -1)
+            [ -n "$TAG" ] && break
+            echo "⏳ Waiting for draft release... ($i/30)"
+            sleep 30
+          done
+
+          if [ -z "$TAG" ]; then
+            echo "::error::No draft release found after 15 minutes"
+            exit 1
+          fi
+
+          gh release upload "$TAG" "$APK" --clobber
+
+  # ─── Finalize: patch latest.json for China mirror ─────────────────────
+  finalize:
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch latest.json with mirror proxy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHPROXY_URL: ${{ vars.GHPROXY_URL }}
+        run: |
+          TAG=$(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | head -1)
+          [ -z "$TAG" ] && { echo "No draft release found"; exit 0; }
+
+          gh release download "$TAG" -p "latest.json" --clobber || { echo "No latest.json asset"; exit 0; }
+
+          if [ -n "$GHPROXY_URL" ]; then
+            sed -i "s|https://github.com/|${GHPROXY_URL}https://github.com/|g" latest.json
+            gh release delete-asset "$TAG" "latest.json" -y 2>/dev/null || true
+            gh release upload "$TAG" "latest.json"
+            echo "✅ Patched latest.json with proxy: $GHPROXY_URL"
+          else
+            echo "⏭️ GHPROXY_URL not set, skipping proxy patch"
+          fi
