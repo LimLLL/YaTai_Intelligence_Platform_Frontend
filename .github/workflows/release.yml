@@ -254,7 +254,8 @@ jobs:
           gh release download "$TAG" -p "latest.json" --clobber || { echo "No latest.json asset"; exit 0; }
 
           if [ -n "$GHPROXY_URL" ]; then
-            sed -i "s|https://github.com/|${GHPROXY_URL}https://github.com/|g" latest.json
+            # 将 https://github.com/ 替换为加速地址（如 https://speed.oo9.dpdns.org/gh/）
+            sed -i "s|https://github.com/|${GHPROXY_URL}|g" latest.json
             gh release delete-asset "$TAG" "latest.json" -y 2>/dev/null || true
             gh release upload "$TAG" "latest.json"
             echo "✅ Patched latest.json with proxy: $GHPROXY_URL"
