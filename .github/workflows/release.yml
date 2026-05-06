@@ -171,7 +171,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -188,11 +188,17 @@ jobs:
 
       - run: pnpm install
 
+      - name: Regenerate Android project
+        run: |
+          rm -rf src-tauri/gen/android
+          pnpm tauri android init
+
       - name: Build APK
         run: pnpm tauri android build --target aarch64
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
           NODE_ENV: production
+          OPENSSL_VENDORED: 1
 
       - name: Sign APK
         run: |
