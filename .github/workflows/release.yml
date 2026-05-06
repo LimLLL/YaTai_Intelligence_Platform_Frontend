@@ -188,6 +188,14 @@ jobs:
 
       - run: pnpm install
 
+      - name: Setup NDK toolchain symlinks
+        run: |
+          TOOLCHAIN="${ANDROID_HOME}/ndk/${{ env.NDK_VERSION }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          ln -sf "${TOOLCHAIN}/llvm-ar" "${TOOLCHAIN}/aarch64-linux-android-ar"
+          ln -sf "${TOOLCHAIN}/llvm-ranlib" "${TOOLCHAIN}/aarch64-linux-android-ranlib"
+          ln -sf "${TOOLCHAIN}/llvm-strip" "${TOOLCHAIN}/aarch64-linux-android-strip"
+          echo "${TOOLCHAIN}" >> "$GITHUB_PATH"
+
       - name: Build APK
         run: pnpm tauri android build --target aarch64
         env:
