@@ -34,8 +34,11 @@ jobs:
           # - platform: ubuntu-22.04   # 取消注释以启用 Linux 构建
           #   args: ''
           #   rust_targets: ''
+          # 不传 -c：tauri.windows.conf.json 是**自动查找并合并**的
+          # （tauri-cli load_config：base → read_platform() → --config 覆盖层），
+          # 显式再传一次只是把同一份配置合并两遍。
           - platform: windows-latest
-            args: '-c src-tauri/tauri.windows.conf.json'
+            args: ''
             rust_targets: ''
     runs-on: ${{ matrix.platform }}
 
