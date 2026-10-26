@@ -15,6 +15,9 @@ env:
   NDK_VERSION: '30.0.14904198'
   PNPM_VERSION: 10
   NODE_VERSION: lts/*
+  # macOS runner 内存小，`vite build`（file-viewer 带来一大批运行时资产）会撞上 Node 默认堆上限，
+  # 以 exit 134 / "Abort trap: 6" 挂掉；Windows 与 Ubuntu runner 撞不到。显式钉死堆上限。
+  NODE_OPTIONS: --max-old-space-size=4096
 
 jobs:
   # ─── Desktop: macOS (arm64 + x86_64) + Windows ────────────────────────
@@ -43,11 +46,10 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     env:
-      # 预接线：本项目当前没有 .npmrc，这个变量不被读取。等哪天引入走私有 Gitea
-      # registry 的包（如 @file-service/sdk），.npmrc 会从这里展开令牌。
-      # 缺它**不会**报「变量未定义」—— pnpm 只是拿不到 auth header，
-      # 到下载 tgz 那一步才以 ERR_PNPM_FETCH_401 失败，排查起来不便宜。
-      GITEA_PACKAGE_REGISTRY_TOKEN: ${{ secrets.GITEA_ACCESS_TOKEN }}
+      # 私有 Gitea registry（@file-service/sdk）的只读令牌。pnpm 10 拒绝展开项目级 .npmrc 里的
+      # 凭据，所以仓库 .npmrc 只放作用域映射，令牌由下面 "Authenticate private npm registry"
+      # 一步写进用户级配置。缺它报的是 ERR_PNPM_FETCH_401，与「令牌没权限」同一个错误码。
+      GITEA_PACKAGE_REGISTRY_TOKEN: ${{ secrets.GITEA_PACKAGE_REGISTRY_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +74,7 @@ jobs:
           VITE_KEYCLOAK_REALM=${{ secrets.VITE_KEYCLOAK_REALM }}
           VITE_KEYCLOAK_CLIENT_ID=${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
+          VITE_FILE_SERVICE_BASE_URL=${{ secrets.VITE_FILE_SERVICE_BASE_URL }}
           VITE_AG_GRID_LICENSE_KEY=${{ secrets.VITE_AG_GRID_LICENSE_KEY }}
           VITE_UPDATE_CHECK_URL=${{ vars.GHPROXY_URL }}${{ github.repository }}/releases/latest/download/latest.json
           ENVEOF
@@ -100,6 +103,11 @@ jobs:
       #   run: |
       #     sudo apt-get update
       #     sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      # 必须是 bash：Windows 默认 shell 是 pwsh，`$GITEA_PACKAGE_REGISTRY_TOKEN` 在那里是空的 PowerShell 变量
+      - name: Authenticate private npm registry
+        shell: bash
+        run: pnpm config set --global "//gitea.hk.tencent.useforall.com/api/packages/lim/npm/:_authToken" "$GITEA_PACKAGE_REGISTRY_TOKEN"
 
       - run: pnpm install
 
@@ -140,7 +148,7 @@ jobs:
 
     env:
       # 同桌面 job，见那边的说明
-      GITEA_PACKAGE_REGISTRY_TOKEN: ${{ secrets.GITEA_ACCESS_TOKEN }}
+      GITEA_PACKAGE_REGISTRY_TOKEN: ${{ secrets.GITEA_PACKAGE_REGISTRY_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -163,6 +171,7 @@ jobs:
           VITE_KEYCLOAK_REALM=${{ secrets.VITE_KEYCLOAK_REALM }}
           VITE_KEYCLOAK_CLIENT_ID=${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
           VITE_API_BASE_URL=${{ secrets.VITE_API_BASE_URL }}
+          VITE_FILE_SERVICE_BASE_URL=${{ secrets.VITE_FILE_SERVICE_BASE_URL }}
           VITE_AG_GRID_LICENSE_KEY=${{ secrets.VITE_AG_GRID_LICENSE_KEY }}
           VITE_UPDATE_CHECK_URL=${{ vars.GHPROXY_URL }}${{ github.repository }}/releases/latest/download/latest.json
           ENVEOF
@@ -215,6 +224,9 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('**/gradle-wrapper.properties', '**/*.gradle*') }}
           restore-keys: gradle-
+
+      - name: Authenticate private npm registry
+        run: pnpm config set --global "//gitea.hk.tencent.useforall.com/api/packages/lim/npm/:_authToken" "$GITEA_PACKAGE_REGISTRY_TOKEN"
 
       - run: pnpm install
 
