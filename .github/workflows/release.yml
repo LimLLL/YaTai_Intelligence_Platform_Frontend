@@ -59,8 +59,16 @@ jobs:
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_ACCESS_TOKEN }}
           GITEA_URL: ${{ secrets.GITEA_REPO_URL }}
+          # 认证失败直接报错，不在没有终端的 runner 上尝试提示输入用户名
+          GIT_TERMINAL_PROMPT: '0'
         run: |
-          git clone "https://${GITEA_TOKEN}@${GITEA_URL#https://}" _source
+          # 令牌由凭据助手按需提供，不写进地址：服务器每次要求认证都会重新取，经过重定向也不会丢，
+          # 也不会落进 .git/config 或进程参数。助手只对 Gitea 主机生效；空的 credential.helper
+          # 先清掉 runner 自带的钥匙串 / GCM。用户名是令牌、密码 x-oauth-basic，Gitea 据此按令牌校验。
+          host="${GITEA_URL#https://}"; host="${host%%/*}"
+          git -c credential.helper= \
+            -c "credential.https://${host}.helper=!f() { test \"\$1\" = get && printf 'username=%s\npassword=x-oauth-basic\n' \"\$GITEA_TOKEN\"; }; f" \
+            clone "$GITEA_URL" _source
           rm -rf _source/.git
           shopt -s dotglob
           cp -rf _source/* .
@@ -157,8 +165,13 @@ jobs:
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_ACCESS_TOKEN }}
           GITEA_URL: ${{ secrets.GITEA_REPO_URL }}
+          GIT_TERMINAL_PROMPT: '0'
         run: |
-          git clone "https://${GITEA_TOKEN}@${GITEA_URL#https://}" _source
+          # 同桌面 job，见那边的说明
+          host="${GITEA_URL#https://}"; host="${host%%/*}"
+          git -c credential.helper= \
+            -c "credential.https://${host}.helper=!f() { test \"\$1\" = get && printf 'username=%s\npassword=x-oauth-basic\n' \"\$GITEA_TOKEN\"; }; f" \
+            clone "$GITEA_URL" _source
           rm -rf _source/.git
           shopt -s dotglob
           cp -rf _source/* .
