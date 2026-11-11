@@ -153,6 +153,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      apk: ${{ steps.version.outputs.apk }}
 
     env:
       # 同桌面 job，见那边的说明
@@ -272,25 +275,31 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=$(jq -r .version src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+        run: |
+          version=$(jq -r .version src-tauri/tauri.conf.json)
+          # 必须与桌面 job tauri-action 的 tagName（app-v__VERSION__）一致
+          echo "tag=app-v${version}" >> "$GITHUB_OUTPUT"
+          echo "apk=${{ env.APP_NAME }}_${version}_aarch64.apk" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK to draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          APK: ${{ steps.version.outputs.apk }}
         run: |
-          APK="${{ env.APP_NAME }}_${{ steps.version.outputs.version }}_aarch64.apk"
           mv signed.apk "$APK"
 
-          # Desktop build 可能还没创建 draft release，轮询等待（最长 15 分钟）
+          # 草稿由桌面 job 的 tauri-action 创建，可能晚于本 job，按本版本的 tag 等它出现（最长 15 分钟）。
+          # 不能取「最新的草稿」：本版草稿还没建出来时会命中遗留的旧版草稿，APK 就传进了别的版本。
           for i in $(seq 1 30); do
-            TAG=$(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | head -1)
-            [ -n "$TAG" ] && break
-            echo "⏳ Waiting for draft release... ($i/30)"
+            count=$(gh release list --limit 100 --json tagName --jq "[.[] | select(.tagName == \"$TAG\")] | length")
+            [ "$count" -gt 0 ] && break
+            echo "⏳ Waiting for release $TAG... ($i/30)"
             sleep 30
           done
-
-          if [ -z "$TAG" ]; then
-            echo "::error::No draft release found after 15 minutes"
+          # 同一 tag 有多个 release 时 gh 选哪个不确定，宁可失败也不猜
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly one release tagged $TAG, found $count"
             exit 1
           fi
 
@@ -310,16 +319,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHPROXY_URL: ${{ vars.GHPROXY_URL }}
+          # 与 Android job 上传 APK 的是同一个 release 和文件，latest.json 里的地址才指得到它
+          TAG: ${{ needs.build-android.outputs.tag }}
+          APK: ${{ needs.build-android.outputs.apk }}
         run: |
-          TAG=$(gh release list --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | head -1)
-          [ -z "$TAG" ] && { echo "No draft release found"; exit 0; }
+          # 没有 latest.json 时桌面和 Android 都收不到更新，直接失败
+          gh release download "$TAG" -p "latest.json" --clobber
 
-          gh release download "$TAG" -p "latest.json" --clobber || { echo "No latest.json asset"; exit 0; }
-
-          # 从 latest.json 读取版本号，注入 android-aarch64 平台
-          VERSION=$(jq -r .version latest.json)
-          REPO="${GITHUB_REPOSITORY}"
-          APK_URL="https://github.com/${REPO}/releases/download/${TAG}/${{ env.APP_NAME }}_${VERSION}_aarch64.apk"
+          # 注入 android-aarch64 平台
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK}"
           jq --arg url "$APK_URL" '.platforms["android-aarch64"] = {"url": $url, "signature": ""}' latest.json > latest_tmp.json
           mv latest_tmp.json latest.json
 
@@ -329,5 +337,4 @@ jobs:
             echo "Patched URLs with proxy: $GHPROXY_URL"
           fi
 
-          gh release delete-asset "$TAG" "latest.json" -y 2>/dev/null || true
-          gh release upload "$TAG" "latest.json"
+          gh release upload "$TAG" "latest.json" --clobber
